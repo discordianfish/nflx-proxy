@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"github.com/miekg/dns"
@@ -8,12 +9,18 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 )
 
-var zones map[string]net.IP
+var (
+	zones    map[string]net.IP
+	netMask  = flag.Int("m", 24, "netmask in CIDR notation")
+	netFirst = flag.String("f", "10.0.1.20", "first adress")
+	netLast  = flag.String("l", "10.0.1.80", "last adress")
+	dev      = flag.String("d", "eth0", "interface to configure ips on")
+)
 
 func ProxyMsg(m *dns.Msg) *dns.Msg {
 	if len(m.Question) == 0 {
@@ -108,8 +115,16 @@ func listenAndServe() {
 			log.Fatal(err)
 		}
 	}()
-	go tcpProxy(":80", "movies.netflix.com:80")
-	go tcpProxy(":443", "cbp-us.nccp.netflix.com:443")
+	for zone, ip := range zones {
+		log.Printf("+ %s -> %s", ip.String(), zone)
+		cmd := exec.Command("ip", "addr", "add", ip.String(), "dev", *dev)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Fatalf("Couldn't add ip address '%s': \n%s", err, out)
+		}
+		go tcpProxy(ip.String()+":80", zone+":80")
+		go tcpProxy(ip.String()+":443", zone+":443")
+	}
 }
 
 func printfErr(format string, a ...interface{}) {
@@ -120,22 +135,33 @@ func printfErr(format string, a ...interface{}) {
 func main() {
 	flag.Parse()
 	if flag.NArg() == 0 {
-		printfErr("usage: %s zone:ip [zone:ip ...]", os.Args[0])
+		printfErr("usage: %s zone [zone ...]", os.Args[0])
+	}
+
+	mask := net.CIDRMask(*netMask, 32)
+	ip := net.ParseIP(*netFirst)
+	last := net.ParseIP(*netLast)
+	if bytes.Compare(ip, last) > 0 {
+		log.Printf("first address must be lower than last address")
+	}
+	if bytes.Compare(ip.Mask(mask), last.Mask(mask)) != 0 {
+		log.Printf("Masks not identical: %c != %c", ip.Mask(mask), last.Mask(mask))
 	}
 
 	zones = make(map[string]net.IP, flag.NArg())
-	for _, arg := range flag.Args() {
-		zoneAndIp := strings.SplitN(arg, ":", 2)
-		if len(zoneAndIp) != 2 {
-			printfErr("Invalid zone mapping: %s", arg)
+	for _, z := range flag.Args() {
+		if bytes.Compare(ip, last) > 0 {
+			log.Fatal("Not enough adresses in pool %s-%s", *netFirst, *netLast)
 		}
-		zone := dns.Fqdn(zoneAndIp[0])
-		ip := net.ParseIP(zoneAndIp[1])
-		if ip == nil {
-			printfErr("Invalid IP address: %s", zoneAndIp[1])
-		}
-		zones[zone] = ip
+		zone := dns.Fqdn(z)
+		zones[zone] = append([]byte(nil), []byte(ip)...)
 		log.Printf("Answering %s with %s", zone, ip)
+		for i := len(ip) - 1; i >= 0; i-- {
+			ip[i]++
+			if ip[i] > 0 {
+				break
+			}
+		}
 	}
 
 	listenAndServe()
@@ -145,7 +171,14 @@ func main() {
 	for {
 		select {
 		case s := <-sig:
-			log.Fatalf("Signal (%d) received, stopping\n", s)
+			log.Printf("Signal (%d) received, cleaning up\n", s)
+			for zone, ip := range zones {
+				log.Printf("- %s -> %s", ip.String(), zone)
+				if err := exec.Command("ip", "addr", "del", ip.String(), "dev", *dev).Run(); err != nil {
+					log.Printf("Error couldn't remove ip from interface: %s", err)
+				}
+			}
+			os.Exit(0)
 		}
 	}
 }
