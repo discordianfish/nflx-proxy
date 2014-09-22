@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"github.com/miekg/dns"
 	"io"
 	"log"
 	"net"
@@ -12,6 +11,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+
+	"github.com/miekg/dns"
 )
 
 var (
@@ -142,10 +143,10 @@ func main() {
 	ip := net.ParseIP(*netFirst)
 	last := net.ParseIP(*netLast)
 	if bytes.Compare(ip, last) > 0 {
-		log.Printf("first address must be lower than last address")
+		printfErr("first address must be lower than last address")
 	}
 	if bytes.Compare(ip.Mask(mask), last.Mask(mask)) != 0 {
-		log.Printf("Masks not identical: %c != %c", ip.Mask(mask), last.Mask(mask))
+		printfErr("Masks not identical: %c != %c", ip.Mask(mask), last.Mask(mask))
 	}
 
 	zones = make(map[string]net.IP, flag.NArg())
