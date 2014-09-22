@@ -15,12 +15,16 @@ import (
 	"github.com/miekg/dns"
 )
 
+const resolvConf = "/etc/resolv.conf"
+
 var (
-	zones    map[string]net.IP
-	netMask  = flag.Int("m", 24, "netmask in CIDR notation")
-	netFirst = flag.String("f", "10.0.1.20", "first adress")
-	netLast  = flag.String("l", "10.0.1.80", "last adress")
-	dev      = flag.String("d", "eth0", "interface to configure ips on")
+	zones      map[string]net.IP
+	nameserver string
+	listen     = flag.String("a", ":53", "DNS listen address")
+	netMask    = flag.Int("m", 24, "netmask in CIDR notation")
+	netFirst   = flag.String("f", "10.0.1.20", "first adress")
+	netLast    = flag.String("l", "10.0.1.80", "last adress")
+	dev        = flag.String("d", "eth0", "interface to configure ips on")
 )
 
 func ProxyMsg(m *dns.Msg) *dns.Msg {
@@ -62,7 +66,7 @@ func dnsHandler(w dns.ResponseWriter, m *dns.Msg) {
 
 	c := new(dns.Client)
 	c.Net = "udp"
-	r, _, err := c.Exchange(m, "8.8.8.8:53")
+	r, _, err := c.Exchange(m, nameserver)
 	if err != nil {
 		log.Print(err)
 		return
@@ -105,13 +109,13 @@ func tcpProxy(listenAddr string, remoteAddr string) {
 
 func listenAndServe() {
 	go func() {
-		err := dns.ListenAndServe(":53", "udp", dns.HandlerFunc(dnsHandler))
+		err := dns.ListenAndServe(*listen, "udp", dns.HandlerFunc(dnsHandler))
 		if err != nil {
 			log.Fatal(err)
 		}
 	}()
 	go func() {
-		err := dns.ListenAndServe(":53", "tcp", dns.HandlerFunc(dnsHandler))
+		err := dns.ListenAndServe(*listen, "tcp", dns.HandlerFunc(dnsHandler))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -148,6 +152,15 @@ func main() {
 	if bytes.Compare(ip.Mask(mask), last.Mask(mask)) != 0 {
 		printfErr("Masks not identical: %c != %c", ip.Mask(mask), last.Mask(mask))
 	}
+
+	conf, err := dns.ClientConfigFromFile(resolvConf)
+	if err != nil {
+		printfErr("Error reading %s: %s", resolvConf, err)
+	}
+	if len(conf.Servers) == 0 {
+		printfErr("No nameservers in %s found", resolvConf)
+	}
+	nameserver = fmt.Sprintf("%s:%s", conf.Servers[0], conf.Port)
 
 	zones = make(map[string]net.IP, flag.NArg())
 	for _, z := range flag.Args() {
