@@ -25,6 +25,7 @@ var (
 	netFirst   = flag.String("f", "10.0.1.20", "first adress")
 	netLast    = flag.String("l", "10.0.1.80", "last adress")
 	dev        = flag.String("d", "eth0", "interface to configure ips on")
+	ns         = flag.String("s", "", "nameserver to use (empty: parse resolv.conf)")
 )
 
 func ProxyMsg(m *dns.Msg) *dns.Msg {
@@ -153,14 +154,18 @@ func main() {
 		printfErr("Masks not identical: %c != %c", ip.Mask(mask), last.Mask(mask))
 	}
 
-	conf, err := dns.ClientConfigFromFile(resolvConf)
-	if err != nil {
-		printfErr("Error reading %s: %s", resolvConf, err)
+	if *ns == "" {
+		conf, err := dns.ClientConfigFromFile(resolvConf)
+		if err != nil {
+			printfErr("Error reading %s: %s", resolvConf, err)
+		}
+		if len(conf.Servers) == 0 {
+			printfErr("No nameservers in %s found", resolvConf)
+		}
+		nameserver = fmt.Sprintf("%s:%s", conf.Servers[0], conf.Port)
+	} else {
+		nameserver = *ns
 	}
-	if len(conf.Servers) == 0 {
-		printfErr("No nameservers in %s found", resolvConf)
-	}
-	nameserver = fmt.Sprintf("%s:%s", conf.Servers[0], conf.Port)
 
 	zones = make(map[string]net.IP, flag.NArg())
 	for _, z := range flag.Args() {
